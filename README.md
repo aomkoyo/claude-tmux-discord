@@ -21,75 +21,100 @@ Discord channel  -->  /enter  -->  tmux session (Claude Code)
 
 - **Node.js** >= 22
 - **pnpm** (via corepack)
-- **tmux** installed on the host
+- **tmux**
 - **Claude Code** CLI (`claude`) installed and authenticated
 - A **Discord bot token** with `MESSAGE_CONTENT` intent enabled
 
-## Quick start
+---
 
-### 1. Clone and install
+## Local setup (bare metal)
+
+Use the host's own tmux — no Docker needed.
+
+### Quick start
 
 ```bash
 git clone https://github.com/aomkoyo/claude-tmux-discord.git
 cd claude-tmux-discord
+bash setup.sh
+```
+
+The setup script checks dependencies, creates `.env`, installs packages, and builds.
+
+### Manual setup
+
+```bash
 corepack enable
 pnpm install
-```
-
-### 2. Configure
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```env
-# Required
-DISCORD_TOKEN=your-bot-token-here
-
-# Recommended: instant slash command registration during dev
-REGISTER_GUILD_ID=your-guild-id
-
-# Database
-DATABASE_URL=file:./dev.db
-
-# Workspace (where Claude sessions live)
-WORKSPACE_ROOT=./workspace
-
-# Optional: default channel for discord-send
-DEFAULT_CHANNEL_ID=
-
-# Logging
-LOG_LEVEL=info
-```
-
-### 3. Build and run
-
-```bash
+cp .env.example .env   # edit .env — set DISCORD_TOKEN at minimum
 pnpm build
 pnpm start
 ```
 
-### 4. Dev mode (auto-reload)
+### Dev mode (auto-reload)
 
 ```bash
 pnpm dev
 ```
 
-## Docker
+### Local .env defaults
+
+```env
+DISCORD_TOKEN=your-bot-token
+REGISTER_GUILD_ID=your-guild-id
+DATABASE_URL=file:./dev.db
+WORKSPACE_ROOT=./workspace
+LOG_LEVEL=info
+```
+
+---
+
+## Docker setup
+
+### Using pre-built image (GHCR)
 
 ```bash
 cp .env.example .env
-# edit .env with your values
+# edit .env — set DISCORD_TOKEN, and change:
+#   DATABASE_URL=file:/data/state.db
+#   WORKSPACE_ROOT=/workspace
 
 docker compose up -d
 ```
 
-The compose file mounts:
-- `./workspace` for per-channel workspaces
-- `./data` for the SQLite database
-- `~/.claude` for Claude Code auth (read-only)
+### Build locally
+
+```bash
+docker compose up -d --build
+```
+
+### Docker .env defaults
+
+```env
+DISCORD_TOKEN=your-bot-token
+REGISTER_GUILD_ID=your-guild-id
+DATABASE_URL=file:/data/state.db
+WORKSPACE_ROOT=/workspace
+LOG_LEVEL=info
+```
+
+### Volumes
+
+| Mount | Purpose |
+|-------|---------|
+| `./workspace:/workspace` | Per-channel Claude workspaces |
+| `./data:/data` | SQLite database (persists across rebuilds) |
+| `~/.claude:/home/node/.claude:ro` | Host Claude Code auth (read-only) |
+
+### Dev with Docker
+
+```bash
+docker compose -f docker-compose.dev.yml up
+```
+
+Source files are mounted, auto-reloads on change.
+
+---
 
 ## Discord commands
 
@@ -132,6 +157,8 @@ The compose file mounts:
 | `acceptEdits` | Auto-accept file edits |
 | `bypassPermissions` | Skip all permission prompts (default for new rooms) |
 
+---
+
 ## @aomkoyo/discord-cli
 
 Standalone CLI for sending messages to Discord. Used by Claude inside tmux sessions.
@@ -145,25 +172,14 @@ pnpm add -g @aomkoyo/discord-cli
 ### Usage
 
 ```bash
-# Send a message
 discord-send "Hello world" -c <channelId>
-
-# Reply to a message
 discord-send "Reply here" -c <channelId> -r <messageId>
-
-# Attach a local file
-discord-send "Check this out" -f ./image.png
-
-# Attach from URL
-discord-send "From the web" -f https://example.com/image.png
-
-# Multiple files
-discord-send "Multiple" -f ./a.png -f ./b.txt
-
-# Override token
+discord-send "Check this" -f ./image.png
+discord-send "From URL" -f https://example.com/image.png
+discord-send "Multi" -f ./a.png -f ./b.txt
 discord-send "Hello" -t <bot-token> -c <channelId>
 
-# Use env vars (no flags needed)
+# With env vars (no flags needed)
 export DISCORD_TOKEN=your-token
 export DEFAULT_CHANNEL_ID=your-channel
 discord-send "Simple"
@@ -179,27 +195,23 @@ discord-send "Simple"
 -h, --help             Show help
 ```
 
-### Token resolution order
-
-1. `-t` flag
-2. `DISCORD_TOKEN` environment variable
-3. `DISCORD_TOKEN` in `.env` file (cwd or parent dirs)
+---
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DISCORD_TOKEN` | Yes | | Bot token |
-| `DISCORD_APP_ID` | No | auto-derived | Application ID |
-| `REGISTER_GUILD_ID` | No | | Guild for instant slash command registration |
-| `BOT_OWNER_IDS` | No | | Comma-separated user IDs for `/acl` access |
-| `DATABASE_URL` | No | `file:/data/state.db` | Prisma SQLite connection |
-| `WORKSPACE_ROOT` | No | `/workspace` | Root directory for channel workspaces |
-| `TMUX_SESSION_PREFIX` | No | `claude-` | Prefix for tmux session names |
-| `CLAUDE_CMD` | No | `claude` | Claude CLI command |
-| `CLAUDE_SYSTEM_PROMPT` | No | built-in | Override system prompt (`OFF` to disable) |
-| `DEFAULT_CHANNEL_ID` | No | | Default channel for `discord-send` |
-| `LOG_LEVEL` | No | `info` | Pino log level |
+| Variable | Required | Local default | Docker default | Description |
+|----------|----------|---------------|----------------|-------------|
+| `DISCORD_TOKEN` | Yes | | | Bot token |
+| `DISCORD_APP_ID` | No | auto-derived | auto-derived | Application ID |
+| `REGISTER_GUILD_ID` | No | | | Guild for instant slash command registration |
+| `BOT_OWNER_IDS` | No | | | Comma-separated user IDs for `/acl` |
+| `DATABASE_URL` | No | `file:./dev.db` | `file:/data/state.db` | SQLite connection |
+| `WORKSPACE_ROOT` | No | `./workspace` | `/workspace` | Channel workspace root |
+| `TMUX_SESSION_PREFIX` | No | `claude-` | `claude-` | Tmux session name prefix |
+| `CLAUDE_CMD` | No | `claude` | `claude` | Claude CLI command |
+| `CLAUDE_SYSTEM_PROMPT` | No | built-in | built-in | Override system prompt (`OFF` to disable) |
+| `DEFAULT_CHANNEL_ID` | No | | | Default channel for `discord-send` |
+| `LOG_LEVEL` | No | `info` | `info` | Pino log level |
 
 ## Project structure
 
@@ -220,7 +232,7 @@ claude-tmux-discord/
     owner.ts          # Bot owner resolution
     logger.ts         # Pino logger
   cli/
-    src/send.ts       # discord-send CLI (published as @aomkoyo/discord-cli)
+    src/send.ts       # discord-send CLI (@aomkoyo/discord-cli)
   prisma/
     schema.prisma     # Database schema
 ```
