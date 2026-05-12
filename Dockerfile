@@ -31,7 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-RUN pnpm add -g @anthropic-ai/claude-code
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -sf /root/.claude/local/claude /usr/local/bin/claude
 
 WORKDIR /app
 
