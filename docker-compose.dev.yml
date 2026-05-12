@@ -1,0 +1,27 @@
+# Development docker-compose for claude-tmux-discord
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up
+#
+# Source files are mounted so changes auto-reload (tsx watch).
+# LOG_LEVEL is set to debug. SQLite is at ./dev.db.
+
+services:
+  bot:
+    build: .
+    container_name: claude-tmux-discord-dev
+    env_file: .env
+    environment:
+      - LOG_LEVEL=debug
+      - DATABASE_URL=file:./dev.db
+      - WORKSPACE_ROOT=./workspace
+    volumes:
+      - ./src:/app/src
+      - ./cli/src:/app/cli/src
+      - ./prisma:/app/prisma
+      - ./workspace:/workspace
+      - ./data:/data
+      - ${HOME}/.claude:/home/node/.claude:ro
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && pnpm exec tsx watch src/index.ts"
+    init: true
+    stop_grace_period: 5s

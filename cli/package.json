@@ -1,0 +1,27 @@
+{
+  "name": "@aomkoyo/discord-cli",
+  "version": "0.2.0",
+  "description": "CLI tool to send messages and files to Discord channels",
+  "type": "module",
+  "bin": {
+    "discord-send": "./dist/send.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,46 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Room {
+  channelId    String   @id @map("channel_id")
+  guildId      String   @map("guild_id")
+  parentId     String?  @map("parent_id")
+  name         String
+  workspaceDir String   @map("workspace_dir")
+  tmuxSession  String   @unique @map("tmux_session")
+  /// One of: default | plan | acceptEdits | bypassPermissions
+  mode         String   @default("bypassPermissions")
+  createdAt    DateTime @default(now()) @map("created_at")
+  createdBy    String   @map("created_by")
+  archived     Boolean  @default(false)
+
+  @@map("rooms")
+}
+
+/// Allowlist entry — user, role, or channel ID granted access to interact with the bot.
+model AclEntry {
+  id      Int      @id @default(autoincrement())
+  /// One of: user | role | channel
+  type    String
+  value   String
+  addedBy String   @map("added_by")
+  addedAt DateTime @default(now()) @map("added_at")
+
+  @@unique([type, value])
+  @@map("acl_entries")
+}
+
+/// Generic key/value settings table (used for `allow_dms` flag).
+model Setting {
+  key   String @id
+  value String
+
+  @@map("settings")
+}

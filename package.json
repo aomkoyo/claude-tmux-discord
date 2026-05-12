@@ -1,0 +1,37 @@
+{
+  "name": "claude-tmux-discord",
+  "version": "0.1.0",
+  "description": "Discord bot that remote-controls Claude Code running inside tmux sessions (per-channel auto session)",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "build": "pnpm prisma:generate && tsc -p tsconfig.json && pnpm copy:generated",
+    "copy:generated": "mkdir -p dist/generated && cp -r src/generated/* dist/generated/",
+    "start": "pnpm prisma:deploy && node dist/index.js",
+    "dev": "pnpm prisma:generate && pnpm prisma:deploy && tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "dependencies": {
+    "@aomkoyo/discord-cli": "workspace:*",
+    "@prisma/client": "^6.19.2",
+    "discord.js": "^14.26.2",
+    "execa": "^9.5.2",
+    "pino": "^9.6.0",
+    "pino-pretty": "^11.3.0",
+    "strip-ansi": "^7.1.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "prisma": "^6.19.2",
+    "tsx": "^4.19.2",
+    "typescript": "^6.0.3"
+  }
+}
