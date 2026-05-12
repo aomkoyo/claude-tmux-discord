@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-RUN npm install -g @anthropic-ai/claude-code
+RUN pnpm add -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
