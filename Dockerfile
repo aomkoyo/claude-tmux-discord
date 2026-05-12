@@ -31,12 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+
+# Install Claude Code — install as root, symlink so all users can access
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && ln -sf /root/.claude/local/claude /usr/local/bin/claude
 
 WORKDIR /app
 
-# Copy entire node_modules from builder (includes prisma CLI + all deps)
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/cli/dist ./cli/dist
 COPY --from=builder /app/dist ./dist
@@ -45,6 +46,7 @@ COPY --from=builder /app/src/generated ./src/generated
 COPY package.json pnpm-workspace.yaml ./
 COPY cli/package.json ./cli/
 COPY prisma ./prisma
+COPY docker-entrypoint.sh ./
 
 ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV NODE_ENV=production
@@ -56,4 +58,4 @@ RUN mkdir -p /workspace /data /home/node/.claude \
 USER node
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "pnpm prisma migrate deploy && node dist/index.js"]
+CMD ["./docker-entrypoint.sh"]

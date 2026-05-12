@@ -21,7 +21,7 @@ services:
       - ./prisma:/app/prisma
       - ./workspace:/workspace
       - ./data:/data
-      - ${HOME}/.claude:/home/node/.claude:ro
+      - ${HOME}/.claude:/home/node/.claude
     command: sh -c "npx prisma generate && npx prisma migrate deploy && pnpm exec tsx watch src/index.ts"
     init: true
     stop_grace_period: 5s

@@ -1,27 +1,25 @@
 # Production docker-compose for claude-tmux-discord
 #
-# 1. Copy .env.example to .env and fill in your values:
-#      cp .env.example .env
+# Setup:
+#   1. cp .env.example .env && edit .env (set DISCORD_TOKEN)
+#   2. docker compose up -d
 #
-# 2. Required .env settings:
-#      DISCORD_TOKEN=your-bot-token
-#      DATABASE_URL=file:/data/state.db
-#      WORKSPACE_ROOT=/workspace
+# Claude Code login:
+#   First run requires authentication. Either:
+#   a) Mount host ~/.claude (has existing login):
+#        Already configured below — just run docker compose up
+#   b) Login inside container:
+#        docker compose exec bot claude login
+#        Session persists in ./claude-config/ volume
 #
-# 3. Optional .env settings:
-#      REGISTER_GUILD_ID=your-guild-id    # instant slash command registration
-#      BOT_OWNER_IDS=id1,id2              # extra users who can run /acl
-#      DEFAULT_CHANNEL_ID=channel-id      # default channel for discord-send
-#      CLAUDE_CMD=claude                  # claude CLI command
-#      LOG_LEVEL=info                     # trace|debug|info|warn|error|fatal
+# Required .env:
+#   DISCORD_TOKEN=your-bot-token
 #
-# 4. Run:
-#      docker compose up -d
-#
-# Volumes:
-#   ./workspace  — per-channel Claude workspaces (persist across restarts)
-#   ./data       — SQLite database (Prisma migrations auto-applied on boot)
-#   ~/.claude    — host Claude Code auth/config (read-only)
+# Optional .env:
+#   REGISTER_GUILD_ID=your-guild-id
+#   BOT_OWNER_IDS=id1,id2
+#   DEFAULT_CHANNEL_ID=channel-id
+#   LOG_LEVEL=info
 
 services:
   bot:
@@ -30,9 +28,15 @@ services:
     container_name: claude-tmux-discord
     env_file: .env
     volumes:
+      # Per-channel workspaces
       - ./workspace:/workspace
+      # SQLite database (auto-migrated on boot)
       - ./data:/data
-      - ${HOME}/.claude:/home/node/.claude:ro
+      # Claude Code auth + session data (read-write for token refresh)
+      # Option A: share host login (recommended if host has claude logged in)
+      - ${HOME}/.claude:/home/node/.claude
+      # Option B: isolated container login (uncomment below, comment above)
+      # - ./claude-config:/home/node/.claude
     restart: always
     init: true
     stop_grace_period: 15s

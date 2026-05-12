@@ -8,6 +8,7 @@ coverage/
 .DS_Store
 workspace/
 data/
+claude-config/
 prisma/dev.db
 prisma/dev.db-journal
 prisma/prisma/
