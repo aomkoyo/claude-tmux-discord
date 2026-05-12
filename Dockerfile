@@ -34,17 +34,16 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY prisma ./prisma
-COPY cli/package.json ./cli/
+
+# Copy entire node_modules from builder (includes prisma CLI + all deps)
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/cli/dist ./cli/dist
-
-RUN pnpm install --frozen-lockfile --prod \
-    && npm install --no-save prisma@6 \
-    && pnpm store prune
-
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/generated ./src/generated
+
+COPY package.json pnpm-workspace.yaml ./
+COPY cli/package.json ./cli/
+COPY prisma ./prisma
 
 ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV NODE_ENV=production
@@ -56,4 +55,4 @@ RUN mkdir -p /workspace /data /home/node/.claude \
 USER node
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+CMD ["sh", "-c", "pnpm prisma migrate deploy && node dist/index.js"]
