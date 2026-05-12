@@ -22,7 +22,7 @@ Discord channel  -->  /enter  -->  tmux session (Claude Code)
 - **Node.js** >= 22
 - **pnpm** (via corepack)
 - **tmux**
-- **Claude Code** CLI (`claude`) installed and authenticated
+- **Claude Code** CLI (`claude`) — installed and authenticated
 - A **Discord bot token** with `MESSAGE_CONTENT` intent enabled
 
 ---
@@ -46,7 +46,7 @@ The setup script checks dependencies, creates `.env`, installs packages, and bui
 ```bash
 corepack enable
 pnpm install
-cp .env.example .env   # edit .env — set DISCORD_TOKEN at minimum
+cp .env.example .env   # edit — set DISCORD_TOKEN at minimum
 pnpm build
 pnpm start
 ```
@@ -57,7 +57,7 @@ pnpm start
 pnpm dev
 ```
 
-### Local .env defaults
+### Local .env
 
 ```env
 DISCORD_TOKEN=your-bot-token
@@ -88,7 +88,7 @@ docker compose up -d
 docker compose up -d --build
 ```
 
-### Docker .env defaults
+### Docker .env
 
 ```env
 DISCORD_TOKEN=your-bot-token
@@ -98,13 +98,55 @@ WORKSPACE_ROOT=/workspace
 LOG_LEVEL=info
 ```
 
+### Claude Code login (Docker)
+
+Claude Code requires authentication before it can run. Two options:
+
+**Option A — Share host login (recommended)**
+
+If you already have `claude` logged in on the host, the default `docker-compose.yml` mounts `~/.claude` into the container. Claude inside Docker will use the host's existing session:
+
+```yaml
+volumes:
+  - ${HOME}/.claude:/home/node/.claude   # read-write for token refresh
+```
+
+> The mount is **read-write** so Claude can refresh expired OAuth tokens. If you prefer read-only, be aware that token refresh will fail after expiry.
+
+**Option B — Login inside the container**
+
+Use an isolated config directory instead of the host's:
+
+1. Edit `docker-compose.yml` — comment out the host mount, uncomment the local one:
+
+```yaml
+volumes:
+  # - ${HOME}/.claude:/home/node/.claude     # comment this
+  - ./claude-config:/home/node/.claude        # uncomment this
+```
+
+2. Start the container, then login:
+
+```bash
+docker compose up -d
+docker compose exec bot claude login
+```
+
+3. Follow the browser-based auth flow. The session is saved in `./claude-config/` and persists across container restarts.
+
+**Verify login works:**
+
+```bash
+docker compose exec bot claude --version
+```
+
 ### Volumes
 
 | Mount | Purpose |
 |-------|---------|
 | `./workspace:/workspace` | Per-channel Claude workspaces |
-| `./data:/data` | SQLite database (persists across rebuilds) |
-| `~/.claude:/home/node/.claude:ro` | Host Claude Code auth (read-only) |
+| `./data:/data` | SQLite database (auto-migrated on boot) |
+| `~/.claude:/home/node/.claude` | Claude Code auth, config, and session data |
 
 ### Dev with Docker
 
@@ -112,7 +154,7 @@ LOG_LEVEL=info
 docker compose -f docker-compose.dev.yml up
 ```
 
-Source files are mounted, auto-reloads on change.
+Source files are mounted, auto-reloads on change via `tsx watch`.
 
 ---
 
@@ -161,7 +203,7 @@ Source files are mounted, auto-reloads on change.
 
 ## @aomkoyo/discord-cli
 
-Standalone CLI for sending messages to Discord. Used by Claude inside tmux sessions.
+Standalone CLI for sending messages to Discord. Used by Claude inside tmux sessions. Zero runtime dependencies.
 
 ### Install globally
 
@@ -194,6 +236,12 @@ discord-send "Simple"
 -f, --file <path|url>  Attach file or URL (repeat for multiple)
 -h, --help             Show help
 ```
+
+### Token resolution order
+
+1. `-t` flag
+2. `DISCORD_TOKEN` environment variable
+3. `DISCORD_TOKEN` in `.env` file (cwd, then parent dirs)
 
 ---
 
