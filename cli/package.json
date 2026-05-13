@@ -1,6 +1,6 @@
 {
   "name": "@aomkoyo/discord-cli",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "CLI tool to send messages and files to Discord channels",
   "type": "module",
   "bin": {
@@ -13,6 +13,24 @@
   "files": [
     "dist"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aomkoyo/claude-tmux-discord.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/aomkoyo/claude-tmux-discord/tree/main/cli#readme",
+  "bugs": "https://github.com/aomkoyo/claude-tmux-discord/issues",
+  "keywords": [
+    "discord",
+    "cli",
+    "discord-bot",
+    "send-message",
+    "discord-api",
+    "claude",
+    "ai-agent",
+    "tmux"
+  ],
+  "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
