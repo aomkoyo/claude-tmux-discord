@@ -27,7 +27,7 @@ Claude Code → runs discord-send → Discord REST API → message appears in ch
 
 ### Key design decisions
 
-- **No tmux pane scraping.** The system prompt tells Claude to use `discord-send` for all replies. The only `capturePane()` call is in `waitForClaudeReady()` — polling for the `❯` prompt to confirm Claude has booted.
+- **No tmux pane scraping.** The system prompt tells the agent to use `discord-send` for all replies. The only `capturePane()` call is in `waitForAgentReady()` — polling for the prompt to confirm the agent has booted.
 - **Serial promise chain per channel.** `SessionState.busy` is a `.then()` chain that serializes all prompts/choices for a given channel. Never send concurrent input to the same tmux session.
 - **Buffer-then-enter.** Messages accumulate in `MessageBuffer` until `/enter` flushes them as one prompt. This enables multi-message composition with attachments.
 - **`ensure()` is the session lifecycle entry point.** It creates tmux sessions lazily, exports `DISCORD_TOKEN` + `DEFAULT_CHANNEL_ID` into the shell environment, starts Claude with `--append-system-prompt`, waits for the `❯` prompt, then queues the initial message if provided.
@@ -38,7 +38,28 @@ Claude Code → runs discord-send → Discord REST API → message appears in ch
 
 ### Resume detection
 
-Two signals trigger `--continue`: the `.claude-tmux-discord/started` marker file (written by the bot) OR `~/.claude/projects/<encoded-path>/*.jsonl` (Claude's own history). Either one → `--continue`.
+Two signals trigger `--continue`: the `.claude-tmux-discord/<channelId>/started` marker file (written by the bot, per-channel to avoid collisions in shared workspaces) OR `~/.claude/projects/<encoded-path>/*.jsonl` (Claude's own history). Either one → `--continue`.
+
+### Projects
+
+A **Project** maps 1:1 with a Discord category and defines a shared workspace directory. All rooms inside a project category share the same workspace — each channel gets its own tmux session + Claude instance, but they all see the same files.
+
+- `/project create name:<name> [dir:<path>]` — creates Discord category + Project DB record
+- Channels created inside a project category are auto-registered via the `channelCreate` event
+- `/new` inside a project category auto-uses the project's workspace dir (unless `path` is explicitly set)
+- Workspace resolution priority: explicit `path` > project lookup > per-channel default
+- `/delete wipe:True` is blocked for project rooms to protect the shared workspace
+
+### Multi-agent support
+
+Rooms can run different AI CLI agents (Claude, Codex, Gemini, Copilot, etc.). Agents are defined via `AGENT_<NAME>=<command>` env vars. If none are set, defaults to `claude` from `CLAUDE_CMD`.
+
+- `/new name:foo agent:codex` — creates room with a specific agent
+- `/agent gemini` — switches agent (resets tmux session)
+- Per-agent system prompt via `AGENT_<NAME>_PROMPT=...` (falls back to `CLAUDE_SYSTEM_PROMPT`)
+- Claude-specific flags (`--append-system-prompt`, `--continue`, `--permission-mode`) are only applied when the agent command starts with `claude`
+- Non-Claude agents receive the system prompt as the first message instead
+- Ready detection uses universal regex `/[❯>$#%]\s*$/` for all agents
 
 ## Monorepo structure
 
@@ -56,7 +77,7 @@ pnpm workspace with two packages: root (the bot) and `cli/` (@aomkoyo/discord-cl
 
 ## Prisma / Database
 
-SQLite via Prisma. Schema in `prisma/schema.prisma`. Models: Room, AclEntry, Setting.
+SQLite via Prisma. Schema in `prisma/schema.prisma`. Models: Project, Room, AclEntry, Setting.
 
 - `src/generated/` is gitignored — run `pnpm prisma generate` after cloning
 - Migrations auto-apply on `pnpm start` via `prisma migrate deploy`

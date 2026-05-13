@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseAgents, defaultAgentName, type AgentDef } from './agents.js';
 
 const csv = z
   .string()
@@ -39,6 +40,8 @@ export type AppConfig = {
   tmuxSessionPrefix: string;
   claudeCmd: string;
   claudeSystemPrompt: string;
+  agents: Map<string, AgentDef>;
+  defaultAgent: string;
   logLevel: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 };
 
@@ -66,6 +69,9 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
       ? parsed.DISCORD_APP_ID
       : deriveAppIdFromToken(parsed.DISCORD_TOKEN);
 
+  const claudeSystemPrompt = parsed.CLAUDE_SYSTEM_PROMPT === 'OFF' ? '' : parsed.CLAUDE_SYSTEM_PROMPT;
+  const agents = parseAgents(env as Record<string, string | undefined>, parsed.CLAUDE_CMD, claudeSystemPrompt);
+
   return {
     discordToken: parsed.DISCORD_TOKEN,
     discordAppId,
@@ -73,7 +79,9 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     workspaceRoot: parsed.WORKSPACE_ROOT,
     tmuxSessionPrefix: parsed.TMUX_SESSION_PREFIX,
     claudeCmd: parsed.CLAUDE_CMD,
-    claudeSystemPrompt: parsed.CLAUDE_SYSTEM_PROMPT === 'OFF' ? '' : parsed.CLAUDE_SYSTEM_PROMPT,
+    claudeSystemPrompt,
+    agents,
+    defaultAgent: defaultAgentName(agents),
     logLevel: parsed.LOG_LEVEL,
   };
 }

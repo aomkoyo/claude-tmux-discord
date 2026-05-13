@@ -39,7 +39,7 @@ export async function createSession(name: string, cwd: string, width = 200, heig
   ]);
 }
 
-export async function startClaude(
+export async function startAgent(
   name: string,
   claudeCmd: string,
   extraArgs: string[] = [],

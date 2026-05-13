@@ -75,6 +75,12 @@ export const commandDefinitions = [
         .setDescription('Custom workspace path (absolute path, e.g. /home/user/my-project)')
         .setRequired(false),
     )
+    .addStringOption((o) =>
+      o
+        .setName('agent')
+        .setDescription('Agent to use (e.g. claude, codex, gemini — defined via AGENT_* env vars)')
+        .setRequired(false),
+    )
     .setContexts(InteractionContextType.Guild)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 
@@ -156,6 +162,18 @@ export const commandDefinitions = [
     .setContexts(InteractionContextType.Guild),
 
   new SlashCommandBuilder()
+    .setName('agent')
+    .setDescription('Change the agent for this room (resets the tmux session)')
+    .addStringOption((o) =>
+      o
+        .setName('name')
+        .setDescription('Agent name (e.g. claude, codex, gemini — defined via AGENT_* env vars)')
+        .setRequired(true),
+    )
+    .setContexts(InteractionContextType.Guild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+
+  new SlashCommandBuilder()
     .setName('acl')
     .setDescription('Manage the bot allowlist (bot owner only)')
     .setContexts(InteractionContextType.Guild)
@@ -198,6 +216,55 @@ export const commandDefinitions = [
     .addSubcommand((s) =>
       s.setName('list').setDescription('Show the current allowlist'),
     ),
+
+  new SlashCommandBuilder()
+    .setName('project')
+    .setDescription('Manage Claude projects (shared workspace across channels in a category)')
+    .addSubcommand((s) =>
+      s
+        .setName('create')
+        .setDescription('Create a new project (Discord category + shared workspace)')
+        .addStringOption((o) =>
+          o
+            .setName('name')
+            .setDescription('Project name (lowercase, digits, dash, underscore; 2-31 chars)')
+            .setRequired(true)
+            .setMinLength(2)
+            .setMaxLength(31),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('dir')
+            .setDescription('Custom workspace path (absolute, e.g. /home/user/my-project)')
+            .setRequired(false),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Default permission mode for rooms in this project')
+            .setRequired(false)
+            .addChoices(...MODE_CHOICES),
+        ),
+    )
+    .addSubcommand((s) =>
+      s.setName('list').setDescription('List all projects in this guild'),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('delete')
+        .setDescription('Delete this project (run from a channel inside the project category)')
+        .addBooleanOption((o) =>
+          o.setName('force').setDescription('Required: confirm destructive action').setRequired(true),
+        )
+        .addBooleanOption((o) =>
+          o.setName('delete_rooms').setDescription('Also unregister all rooms in this project').setRequired(false),
+        ),
+    )
+    .addSubcommand((s) =>
+      s.setName('info').setDescription('Show project info for this channel\'s category'),
+    )
+    .setContexts(InteractionContextType.Guild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 ].map((b) => b.toJSON());
 
 /**
@@ -241,7 +308,7 @@ export function bindCommandHandlers(client: Client, deps: CommandDeps): void {
       try {
         switch (interaction.commandName) {
           case 'new':
-            await handleNew(interaction, sessionMgr, log);
+            await handleNew(interaction, sessionMgr, cfg, log);
             break;
           case 'delete':
             await handleDelete(interaction, sessionMgr, log);
@@ -256,7 +323,7 @@ export function bindCommandHandlers(client: Client, deps: CommandDeps): void {
             await handleMode(interaction, sessionMgr, log);
             break;
           case 'status':
-            await handleStatus(interaction, sessionMgr);
+            await handleStatus(interaction, sessionMgr, cfg);
             break;
           case 'reset':
             await handleReset(interaction, sessionMgr);
@@ -274,7 +341,13 @@ export function bindCommandHandlers(client: Client, deps: CommandDeps): void {
             await handleBuffer(interaction, buffer);
             break;
           case 'help':
-            await handleHelp(interaction);
+            await handleHelp(interaction, cfg);
+            break;
+          case 'project':
+            await handleProject(interaction, sessionMgr, log);
+            break;
+          case 'agent':
+            await handleAgent(interaction, sessionMgr, cfg, log);
             break;
           default:
             await replyEphemeral(
@@ -449,6 +522,7 @@ function formatList(title: string, items: string[]): string {
 async function handleNew(
   interaction: ChatInputCommandInteraction,
   sessionMgr: SessionManager,
+  cfg: AppConfig,
   log: Logger,
 ): Promise<void> {
   if (!interaction.guild) {
@@ -468,6 +542,13 @@ async function handleNew(
 
   const mode = asRoomMode(interaction.options.getString('mode'));
   const customPath = interaction.options.getString('path') ?? undefined;
+  const agentRaw = interaction.options.getString('agent')?.toLowerCase();
+  const agent = agentRaw ?? cfg.defaultAgent;
+  if (!cfg.agents.has(agent)) {
+    const available = [...cfg.agents.keys()].join(', ');
+    await replyEphemeral(interaction, `❌ Unknown agent \`${agent}\`. Available: ${available}`);
+    return;
+  }
 
   const me = guild.members.me;
   if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
@@ -481,6 +562,18 @@ async function handleNew(
   const source = interaction.channel;
   if (source && 'parent' in source && source.parent && source.parent.type === ChannelType.GuildCategory) {
     parent = source.parent;
+  }
+
+  let projectId: string | undefined;
+  let effectiveMode = mode;
+  if (parent && !customPath) {
+    const project = await sessionMgr.findProjectByCategory(parent.id);
+    if (project) {
+      projectId = project.categoryId;
+      if (mode === 'bypassPermissions' && project.defaultMode !== 'bypassPermissions') {
+        effectiveMode = asRoomMode(project.defaultMode);
+      }
+    }
   }
 
   const created = await guild.channels.create({
@@ -497,13 +590,16 @@ async function handleNew(
     parentId: parent?.id ?? null,
     name: rawName,
     createdBy: interaction.user.id,
-    mode,
+    mode: effectiveMode,
     workspacePath: customPath,
+    projectId,
+    agent,
   });
 
-  log.info({ channelId: created.id, name: rawName, mode, by: interaction.user.id }, 'room created');
+  const agentDef = cfg.agents.get(agent);
+  log.info({ channelId: created.id, name: rawName, mode: effectiveMode, agent, by: interaction.user.id }, 'room created');
   await interaction.editReply(
-    `✅ Created <#${created.id}> · mode \`${mode}\` · workspace \`${room.workspaceDir}\` · tmux \`${room.tmuxSession}\`\nหนูจะเริ่ม Claude เมื่อนายท่านพิมพ์ข้อความแรกในห้องนั้นเจ้าค่ะ ✿`,
+    `✅ Created <#${created.id}> · agent \`${agent}\` (\`${agentDef?.cmd ?? agent}\`) · mode \`${effectiveMode}\` · workspace \`${room.workspaceDir}\``,
   );
 }
 
@@ -640,12 +736,16 @@ async function handleRename(
 async function handleStatus(
   interaction: ChatInputCommandInteraction,
   sessionMgr: SessionManager,
+  cfg: AppConfig,
 ): Promise<void> {
   const status = await sessionMgr.statusChannel(interaction.channelId);
   const lines = [
     `**Session:** \`${status.sessionName}\``,
     `**Workspace:** \`${status.cwd}\``,
     `**State:** ${status.exists ? '✅ active' : '⚪ not started'}`,
+    status.room
+      ? `**Agent:** \`${status.room.agent}\` (\`${cfg.agents.get(status.room.agent)?.cmd ?? status.room.agent}\`)`
+      : `**Agent:** \`${cfg.defaultAgent}\` (default)`,
     status.room
       ? `**Mode:** \`${status.room.mode}\``
       : '**Mode:** \`default\` (no DB record)',
@@ -745,12 +845,12 @@ async function handleBuffer(
   await replyEphemeral(interaction, lines.join('\n'));
 }
 
-async function handleHelp(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleHelp(interaction: ChatInputCommandInteraction, cfg: AppConfig): Promise<void> {
   await interaction.reply({
     ephemeral: true,
     content: [
       '**Room management**',
-      '`/new name:<name> [mode:<mode>]` — สร้าง Discord channel ใหม่ + workspace + tmux session',
+      '`/new name:<name> [mode:<mode>] [agent:<name>]` — สร้าง Discord channel ใหม่ + workspace + tmux session',
       '`/delete force:True [wipe:True]` — ลบห้องนี้ (channel + tmux + DB; `wipe` ลบ workspace ด้วย)',
       '`/rooms` — list ห้องที่ลงทะเบียนทั้งหมด',
       '`/rename name:<new>` — เปลี่ยนชื่อห้องนี้',
@@ -765,13 +865,24 @@ async function handleHelp(interaction: ChatInputCommandInteraction): Promise<voi
       '**Session control**',
       '`/status` — ข้อมูล session ของห้องนี้',
       '`/reset` — kill tmux ของห้องนี้',
+      '`/agent name:<name>` — เปลี่ยน agent (reset session อัตโนมัติ)',
       '`/help` — แสดงข้อความนี้',
+      '',
+      '**Agents** (กำหนดผ่าน `AGENT_*` env vars)',
+      ...[...cfg.agents.entries()].map(([k, v]) => `\`${k}\` → \`${v.cmd}\``),
       '',
       '**Modes**',
       '`default` — Claude ถาม permission ก่อนทำทุกอย่าง',
       '`plan` — Plan mode (วางแผนก่อน, แก้ไฟล์ไม่ได้)',
       '`acceptEdits` — auto-accept file edits (แต่ shell ยังถาม)',
       '`bypassPermissions` — ⚠️ ข้าม permission ทั้งหมด (`--dangerously-skip-permissions`)',
+      '',
+      '**Projects (shared workspace)**',
+      '`/project create name:<name> [dir:<path>] [mode:<mode>]` — สร้าง category + shared workspace',
+      '`/project list` — list projects ทั้งหมด',
+      '`/project delete force:True [delete_rooms:True]` — ลบ project',
+      '`/project info` — ดูข้อมูล project ของ category นี้',
+      'Channel ที่สร้างใน project category จะ auto-register เป็น Claude room',
       '',
       '**Allowlist (bot owner only)**',
       '`/acl add type:<user|role|channel> value:<id|mention>` — เพิ่มเข้า allowlist',
@@ -783,6 +894,195 @@ async function handleHelp(interaction: ChatInputCommandInteraction): Promise<voi
       'เมื่อ Claude ขึ้น menu (เลือก 1/2/3) บอตจะแสดง embed + buttons ให้กดเลือกได้ทันที',
     ].join('\n'),
   });
+}
+
+// ─── /agent handler ─────────────────────────────────────────────────
+
+async function handleAgent(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+  cfg: AppConfig,
+  log: Logger,
+): Promise<void> {
+  const room = await sessionMgr.getRoom(interaction.channelId);
+  if (!room) {
+    await replyEphemeral(interaction, '❌ This channel is not a registered Claude room.');
+    return;
+  }
+
+  const newAgent = interaction.options.getString('name', true).toLowerCase();
+  if (!cfg.agents.has(newAgent)) {
+    const available = [...cfg.agents.keys()].join(', ');
+    await replyEphemeral(interaction, `❌ Unknown agent \`${newAgent}\`. Available: ${available}`);
+    return;
+  }
+
+  if (newAgent === room.agent) {
+    await replyEphemeral(interaction, `ℹ️ Already using agent \`${newAgent}\`.`);
+    return;
+  }
+
+  const agentDef = cfg.agents.get(newAgent)!;
+  await interaction.deferReply();
+  await sessionMgr.setRoomAgent(interaction.channelId, newAgent);
+  log.info({ channelId: interaction.channelId, from: room.agent, to: newAgent }, 'agent changed');
+  await interaction.editReply(
+    `⚠️ Agent changed: \`${room.agent}\` → \`${newAgent}\` (\`${agentDef.cmd}\`)\nSession ถูก reset — ข้อความถัดไปจะเริ่ม agent ใหม่ค่ะ`,
+  );
+}
+
+// ─── /project handlers ──────────────────────────────────────────────
+
+async function handleProject(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+  log: Logger,
+): Promise<void> {
+  const sub = interaction.options.getSubcommand();
+  switch (sub) {
+    case 'create':
+      await handleProjectCreate(interaction, sessionMgr, log);
+      return;
+    case 'list':
+      await handleProjectList(interaction, sessionMgr);
+      return;
+    case 'delete':
+      await handleProjectDelete(interaction, sessionMgr, log);
+      return;
+    case 'info':
+      await handleProjectInfo(interaction, sessionMgr);
+      return;
+    default:
+      await replyEphemeral(interaction, `❓ Unknown subcommand: \`${sub}\``);
+  }
+}
+
+async function handleProjectCreate(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+  log: Logger,
+): Promise<void> {
+  if (!interaction.guild) {
+    await replyEphemeral(interaction, '❌ Only works in a guild.');
+    return;
+  }
+  const rawName = interaction.options.getString('name', true);
+  if (!NAME_RE.test(rawName)) {
+    await replyEphemeral(interaction, '❌ Name must match `[a-z0-9][a-z0-9-_]{1,30}`.');
+    return;
+  }
+  const customDir = interaction.options.getString('dir') ?? undefined;
+  const mode = asRoomMode(interaction.options.getString('mode'));
+  const me = interaction.guild.members.me;
+  if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    await replyEphemeral(interaction, '❌ Bot missing `Manage Channels` permission.');
+    return;
+  }
+
+  await interaction.deferReply();
+
+  const category = await interaction.guild.channels.create({
+    name: rawName,
+    type: ChannelType.GuildCategory,
+    reason: `claude-tmux-discord: /project create by ${interaction.user.tag}`,
+  });
+
+  const project = await sessionMgr.createProject({
+    categoryId: category.id,
+    guildId: interaction.guild.id,
+    name: rawName,
+    workspacePath: customDir,
+    defaultMode: mode,
+    createdBy: interaction.user.id,
+  });
+
+  log.info({ categoryId: category.id, name: rawName, dir: project.workspaceDir, by: interaction.user.id }, 'project created');
+  await interaction.editReply(
+    `✅ Created project **${rawName}** · category <#${category.id}> · workspace \`${project.workspaceDir}\`\nสร้าง channel ใน category นี้ → auto-register เป็น Claude room เจ้าค่ะ ✿`,
+  );
+}
+
+async function handleProjectList(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  const projects = await sessionMgr.listProjects(interaction.guild?.id);
+  if (projects.length === 0) {
+    await interaction.editReply('🪹 No projects. Use `/project create` to make one.');
+    return;
+  }
+  const lines = projects.map(
+    (p) => `• **${p.name}** · <#${p.categoryId}> · \`${p.workspaceDir}\` · by <@${p.createdBy}>`,
+  );
+  await interaction.editReply(['**Projects**', ...lines].join('\n'));
+}
+
+async function handleProjectDelete(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+  log: Logger,
+): Promise<void> {
+  if (!interaction.guild) {
+    await replyEphemeral(interaction, '❌ Only works in a guild.');
+    return;
+  }
+  const force = interaction.options.getBoolean('force', true);
+  if (!force) {
+    await replyEphemeral(interaction, '⚠️ You must pass `force: True` to confirm deletion.');
+    return;
+  }
+  const deleteRooms = interaction.options.getBoolean('delete_rooms') ?? false;
+
+  const source = interaction.channel;
+  let categoryId: string | null = null;
+  if (source && 'parentId' in source && source.parentId) {
+    categoryId = source.parentId;
+  }
+  if (!categoryId) {
+    await replyEphemeral(interaction, '❌ Run this from a channel inside a project category.');
+    return;
+  }
+  const project = await sessionMgr.getProject(categoryId);
+  if (!project) {
+    await replyEphemeral(interaction, '❌ This category is not a registered project.');
+    return;
+  }
+
+  await interaction.deferReply();
+  await sessionMgr.deleteProject(categoryId, { deleteRooms });
+  log.info({ categoryId, name: project.name, deleteRooms, by: interaction.user.id }, 'project deleted');
+  await interaction.editReply(
+    `🗑️ Deleted project **${project.name}**${deleteRooms ? ' and all its rooms' : ''}.`,
+  );
+}
+
+async function handleProjectInfo(
+  interaction: ChatInputCommandInteraction,
+  sessionMgr: SessionManager,
+): Promise<void> {
+  const source = interaction.channel;
+  let categoryId: string | null = null;
+  if (source && 'parentId' in source && source.parentId) {
+    categoryId = source.parentId;
+  }
+  if (!categoryId) {
+    await replyEphemeral(interaction, 'ℹ️ This channel is not in a category.');
+    return;
+  }
+  const project = await sessionMgr.getProject(categoryId);
+  if (!project) {
+    await replyEphemeral(interaction, 'ℹ️ This category is not a registered project.');
+    return;
+  }
+  const lines = [
+    `**Project:** ${project.name}`,
+    `**Category:** <#${project.categoryId}>`,
+    `**Workspace:** \`${project.workspaceDir}\``,
+    `**Default mode:** \`${project.defaultMode}\``,
+    `**Created:** <t:${Math.floor(project.createdAt.getTime() / 1000)}:R> by <@${project.createdBy}>`,
+  ];
+  await interaction.reply({ content: lines.join('\n'), ephemeral: true });
 }
 
 // ─── menu button handler ─────────────────────────────────────────────

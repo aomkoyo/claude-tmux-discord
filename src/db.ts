@@ -1,4 +1,4 @@
-import { PrismaClient, type Room, type AclEntry, type Setting } from './generated/prisma/index.js';
+import { PrismaClient, type Room, type AclEntry, type Setting, type Project } from './generated/prisma/index.js';
 
 export const ACL_ENTRY_TYPES = ['user', 'role', 'channel'] as const;
 export type AclEntryType = (typeof ACL_ENTRY_TYPES)[number];
@@ -36,7 +36,7 @@ export async function disconnect(): Promise<void> {
   }
 }
 
-export type { Room };
+export type { Room, Project };
 
 export type CreateRoomInput = {
   channelId: string;
@@ -47,6 +47,8 @@ export type CreateRoomInput = {
   tmuxSession: string;
   createdBy: string;
   mode?: RoomMode;
+  projectId?: string | undefined;
+  agent?: string | undefined;
 };
 
 export async function createRoom(input: CreateRoomInput): Promise<Room> {
@@ -60,8 +62,16 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
       tmuxSession: input.tmuxSession,
       createdBy: input.createdBy,
       mode: input.mode ?? 'bypassPermissions',
+      projectId: input.projectId ?? null,
+      agent: input.agent ?? 'claude',
     },
   });
+}
+
+export async function setRoomAgent(channelId: string, agent: string): Promise<Room | null> {
+  return getPrisma()
+    .room.update({ where: { channelId }, data: { agent } })
+    .catch(() => null);
 }
 
 export async function setRoomMode(channelId: string, mode: RoomMode): Promise<Room | null> {
@@ -95,6 +105,52 @@ export async function renameRoom(channelId: string, name: string): Promise<Room 
   return getPrisma()
     .room.update({ where: { channelId }, data: { name } })
     .catch(() => null);
+}
+
+// ─── Projects ───────────────────────────────────────────────────────
+
+export type CreateProjectInput = {
+  categoryId: string;
+  guildId: string;
+  name: string;
+  workspaceDir: string;
+  defaultMode?: RoomMode | undefined;
+  createdBy: string;
+};
+
+export async function createProject(input: CreateProjectInput): Promise<Project> {
+  return getPrisma().project.create({
+    data: {
+      categoryId: input.categoryId,
+      guildId: input.guildId,
+      name: input.name,
+      workspaceDir: input.workspaceDir,
+      defaultMode: input.defaultMode ?? 'bypassPermissions',
+      createdBy: input.createdBy,
+    },
+  });
+}
+
+export async function findProjectByCategory(categoryId: string): Promise<Project | null> {
+  return getPrisma().project.findUnique({ where: { categoryId } });
+}
+
+export async function listProjects(guildId?: string): Promise<Project[]> {
+  return getPrisma().project.findMany({
+    where: guildId ? { guildId } : {},
+    orderBy: { createdAt: 'asc' },
+  });
+}
+
+export async function deleteProject(categoryId: string): Promise<void> {
+  await getPrisma().project.delete({ where: { categoryId } }).catch(() => undefined);
+}
+
+export async function listRoomsByProject(categoryId: string): Promise<Room[]> {
+  return getPrisma().room.findMany({
+    where: { projectId: categoryId, archived: false },
+    orderBy: { createdAt: 'asc' },
+  });
 }
 
 // ─── ACL ─────────────────────────────────────────────────────────────

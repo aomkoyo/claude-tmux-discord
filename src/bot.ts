@@ -1,4 +1,5 @@
 import {
+  ChannelType,
   Client,
   GatewayIntentBits,
   Events,
@@ -97,6 +98,43 @@ export async function createBot(cfg: AppConfig, acl: AclState, log: Logger): Pro
       { channelId: message.channelId, queueLen, attachments: attachments.length },
       'message buffered',
     );
+  });
+
+  client.on(Events.ChannelCreate, async (channel) => {
+    if (channel.type !== ChannelType.GuildText) return;
+    if (!channel.parentId || !channel.guild) return;
+    if (sessionMgr.hasRegisteredChannel(channel.id)) return;
+
+    const project = await sessionMgr.findProjectByCategory(channel.parentId);
+    if (!project) return;
+
+    const name = channel.name
+      .replace(/^claude-/, '')
+      .replace(/[^a-z0-9_-]/g, '-')
+      .slice(0, 31) || channel.id;
+
+    try {
+      const room = await sessionMgr.registerRoom({
+        channelId: channel.id,
+        guildId: channel.guild.id,
+        parentId: channel.parentId,
+        name,
+        createdBy: 'auto',
+        mode: (project.defaultMode as 'default' | 'plan' | 'acceptEdits' | 'bypassPermissions') ?? 'bypassPermissions',
+        projectId: project.categoryId,
+      });
+      log.info(
+        { channelId: channel.id, project: project.name, name },
+        'auto-registered channel in project category',
+      );
+      if (channel.isSendable()) {
+        await channel.send(
+          `🤖 Auto-registered as Claude room in project **${project.name}** · workspace \`${room.workspaceDir}\`\nType a message then \`/enter\` to send to Claude.`,
+        );
+      }
+    } catch (err) {
+      log.error({ err, channelId: channel.id, parentId: channel.parentId }, 'auto-register failed');
+    }
   });
 
   return { client, sessionMgr, buffer };

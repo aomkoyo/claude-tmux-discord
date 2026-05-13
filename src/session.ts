@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import * as tmux from './tmux.js';
 import * as db from './db.js';
 import { asRoomMode, type RoomMode } from './db.js';
+import { isClaudeAgent } from './agents.js';
 import type { AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 
@@ -49,6 +50,8 @@ export type RoomCreate = {
   createdBy: string;
   mode?: RoomMode;
   workspacePath?: string | undefined;
+  projectId?: string | undefined;
+  agent?: string | undefined;
 };
 
 export class SessionManager {
@@ -96,9 +99,18 @@ export class SessionManager {
 
   async registerRoom(input: RoomCreate): Promise<db.Room> {
     const tmuxSession = this.cfg.tmuxSessionPrefix + input.channelId;
-    const workspaceDir = input.workspacePath
-      ? path.resolve(input.workspacePath)
-      : path.join(this.cfg.workspaceRoot, input.channelId);
+
+    let workspaceDir: string;
+    if (input.workspacePath) {
+      workspaceDir = path.resolve(input.workspacePath);
+    } else if (input.projectId) {
+      const project = await db.findProjectByCategory(input.projectId);
+      if (!project) throw new Error(`Project not found: ${input.projectId}`);
+      workspaceDir = project.workspaceDir;
+    } else {
+      workspaceDir = path.join(this.cfg.workspaceRoot, input.channelId);
+    }
+
     await mkdir(workspaceDir, { recursive: true });
     const room = await db.createRoom({
       channelId: input.channelId,
@@ -109,8 +121,18 @@ export class SessionManager {
       tmuxSession,
       createdBy: input.createdBy,
       mode: input.mode ?? 'bypassPermissions',
+      projectId: input.projectId,
+      agent: input.agent ?? this.cfg.defaultAgent,
     });
     this.registeredChannels.add(input.channelId);
+    return room;
+  }
+
+  async setRoomAgent(channelId: string, agent: string): Promise<db.Room | null> {
+    const room = await db.setRoomAgent(channelId, agent);
+    if (!room) return null;
+    await tmux.killSession(room.tmuxSession);
+    this.sessions.delete(channelId);
     return room;
   }
 
@@ -130,10 +152,14 @@ export class SessionManager {
     this.registeredChannels.delete(channelId);
 
     if (opts.wipeWorkspace && room) {
-      try {
-        await rm(room.workspaceDir, { recursive: true, force: true });
-      } catch (err) {
-        this.log.warn({ err, dir: room.workspaceDir }, 'failed to wipe workspace');
+      if (room.projectId) {
+        this.log.warn({ channelId }, 'refusing to wipe shared project workspace');
+      } else {
+        try {
+          await rm(room.workspaceDir, { recursive: true, force: true });
+        } catch (err) {
+          this.log.warn({ err, dir: room.workspaceDir }, 'failed to wipe workspace');
+        }
       }
     }
     await db.deleteRoom(channelId);
@@ -145,6 +171,52 @@ export class SessionManager {
 
   async getRoom(channelId: string): Promise<db.Room | null> {
     return db.findRoomByChannel(channelId);
+  }
+
+  // ─── project CRUD ───────────────────────────────────────────────
+
+  async createProject(input: {
+    categoryId: string;
+    guildId: string;
+    name: string;
+    workspacePath?: string | undefined;
+    defaultMode?: RoomMode;
+    createdBy: string;
+  }): Promise<db.Project> {
+    const workspaceDir = input.workspacePath
+      ? path.resolve(input.workspacePath)
+      : path.join(this.cfg.workspaceRoot, input.name);
+    await mkdir(workspaceDir, { recursive: true });
+    return db.createProject({
+      categoryId: input.categoryId,
+      guildId: input.guildId,
+      name: input.name,
+      workspaceDir,
+      defaultMode: input.defaultMode,
+      createdBy: input.createdBy,
+    });
+  }
+
+  async deleteProject(categoryId: string, opts: { deleteRooms?: boolean } = {}): Promise<void> {
+    if (opts.deleteRooms) {
+      const rooms = await db.listRoomsByProject(categoryId);
+      for (const room of rooms) {
+        await this.unregisterRoom(room.channelId);
+      }
+    }
+    await db.deleteProject(categoryId);
+  }
+
+  async listProjects(guildId?: string): Promise<db.Project[]> {
+    return db.listProjects(guildId);
+  }
+
+  async getProject(categoryId: string): Promise<db.Project | null> {
+    return db.findProjectByCategory(categoryId);
+  }
+
+  async findProjectByCategory(categoryId: string): Promise<db.Project | null> {
+    return db.findProjectByCategory(categoryId);
   }
 
   // ─── prompt flow ───────────────────────────────────────────────
@@ -199,40 +271,48 @@ export class SessionManager {
     await mkdir(cwd, { recursive: true });
 
     const mode = asRoomMode(room?.mode);
-    const flags = MODE_FLAGS[mode];
+    const agentName = room?.agent ?? this.cfg.defaultAgent;
+    const agentDef = this.cfg.agents.get(agentName);
+    const agentCmd = agentDef?.cmd ?? this.cfg.claudeCmd;
+    const agentPrompt = agentDef?.systemPrompt ?? this.cfg.claudeSystemPrompt;
+    const isClaude = isClaudeAgent(agentCmd);
 
     const alreadyExists = await tmux.sessionExists(name);
     if (!alreadyExists) {
-      const [markerSeen, claudeSeen] = await Promise.all([
-        this.markerExists(cwd),
-        hasClaudeHistory(cwd),
+      const [markerSeen, historySeen] = await Promise.all([
+        this.markerExists(cwd, channelId),
+        isClaude ? hasClaudeHistory(cwd) : Promise.resolve(false),
       ]);
-      const startedBefore = markerSeen || claudeSeen;
+      const startedBefore = markerSeen || historySeen;
 
-      const sysPrompt = this.cfg.claudeSystemPrompt;
-      const sysPromptFlags =
-        sysPrompt.length > 0
-          ? ['--append-system-prompt', shellSingleQuote(sysPrompt)]
-          : [];
-
-      const startFlags = [
-        ...flags,
-        ...sysPromptFlags,
-        ...(startedBefore ? ['--continue'] : []),
-      ];
+      const startFlags: string[] = [];
+      if (isClaude) {
+        startFlags.push(...MODE_FLAGS[mode]);
+        if (agentPrompt.length > 0) {
+          startFlags.push('--append-system-prompt', shellSingleQuote(agentPrompt));
+        }
+        if (startedBefore) startFlags.push('--continue');
+      }
 
       this.log.info(
-        { channelId, name, cwd, mode, resume: startedBefore },
-        'creating tmux session and starting Claude',
+        { channelId, name, cwd, mode, agent: agentName, resume: startedBefore },
+        'creating tmux session and starting agent',
       );
       await tmux.createSession(name, cwd);
       await this.exportEnvToSession(name, channelId);
-      await tmux.startClaude(name, this.cfg.claudeCmd, startFlags);
-      await this.waitForClaudeReady(name, channelId);
-      await this.writeMarker(cwd);
+      await tmux.startAgent(name, agentCmd, startFlags);
+      await this.waitForAgentReady(name, channelId);
+      await this.writeMarker(cwd, channelId);
+
+      if (!isClaude && agentPrompt.length > 0) {
+        await delay(1000);
+        await tmux.sendPromptText(name, agentPrompt);
+        await tmux.sendEnter(name);
+        await this.waitForAgentReady(name, channelId);
+      }
     } else {
-      this.log.info({ channelId, name, mode }, 'reattaching to existing tmux session');
-      await this.waitForClaudeReady(name, channelId);
+      this.log.info({ channelId, name, mode, agent: agentName }, 'reattaching to existing tmux session');
+      await this.waitForAgentReady(name, channelId);
     }
 
     const state: SessionState = {
@@ -253,13 +333,13 @@ export class SessionManager {
     return state;
   }
 
-  private markerPath(cwd: string): string {
-    return path.join(cwd, '.claude-tmux-discord', 'started');
+  private markerPath(cwd: string, channelId: string): string {
+    return path.join(cwd, '.claude-tmux-discord', channelId, 'started');
   }
 
-  private async markerExists(cwd: string): Promise<boolean> {
+  private async markerExists(cwd: string, channelId: string): Promise<boolean> {
     try {
-      await stat(this.markerPath(cwd));
+      await stat(this.markerPath(cwd, channelId));
       return true;
     } catch {
       return false;
@@ -275,7 +355,7 @@ export class SessionManager {
     await delay(500);
   }
 
-  private async waitForClaudeReady(sessionName: string, channelId: string): Promise<void> {
+  private async waitForAgentReady(sessionName: string, channelId: string): Promise<void> {
     const maxWaitMs = 60_000;
     const pollMs = 1000;
     const start = Date.now();
@@ -289,16 +369,16 @@ export class SessionManager {
       }
       const trimmed = pane.trimEnd();
       const lastLine = trimmed.split('\n').at(-1) ?? '';
-      if (/[❯>]\s*$/.test(lastLine)) {
-        this.log.info({ channelId, elapsed: Date.now() - start }, 'Claude ready');
+      if (/[❯>$#%]\s*$/.test(lastLine)) {
+        this.log.info({ channelId, elapsed: Date.now() - start }, 'agent ready');
         return;
       }
     }
-    this.log.warn({ channelId, maxWaitMs }, 'Claude did not become ready in time, proceeding anyway');
+    this.log.warn({ channelId, maxWaitMs }, 'agent did not become ready in time, proceeding anyway');
   }
 
-  private async writeMarker(cwd: string): Promise<void> {
-    const file = this.markerPath(cwd);
+  private async writeMarker(cwd: string, channelId: string): Promise<void> {
+    const file = this.markerPath(cwd, channelId);
     try {
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, new Date().toISOString());
