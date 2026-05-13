@@ -92,9 +92,28 @@ async function downloadOne(
  */
 export function describeAttachments(items: readonly SavedAttachment[]): string {
   if (items.length === 0) return '';
-  const lines = items.map((it) => {
-    const kind = it.isImage ? 'image' : 'file';
-    return `[Attached ${kind}: ${it.workspaceRelative} (${it.originalName}, ${it.size} bytes)]`;
-  });
+
+  const images = items.filter((it) => it.isImage);
+  const files = items.filter((it) => !it.isImage);
+
+  const lines: string[] = [];
+
+  for (const it of images) {
+    lines.push(
+      `[Attached image: ${it.absolutePath} (${it.originalName}, ${it.size} bytes)] — Use your Read tool to view this image file.`,
+    );
+  }
+  for (const it of files) {
+    lines.push(
+      `[Attached file: ${it.absolutePath} (${it.originalName}, ${it.size} bytes)]`,
+    );
+  }
+
+  if (images.length > 0) {
+    lines.push(
+      'IMPORTANT: The user sent image(s). You MUST read the image file(s) above with your Read tool to see them before responding.',
+    );
+  }
+
   return lines.join('\n');
 }

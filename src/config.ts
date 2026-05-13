@@ -12,7 +12,7 @@ const csv = z
   );
 
 const DEFAULT_SYSTEM_PROMPT =
-  'You are connected to a Discord bot. To send a message to the Discord user, run: discord-send "<message>" [-c <channelId>] [-r <replyId>] [-f <filePath>]  . -c sets the target channel (optional if DEFAULT_CHANNEL_ID is configured). -r replies to a specific message (optional). -f attaches a file (repeat for multiple). -t overrides the bot token (optional). The message can be multi-line using quotes. You may run this command multiple times per turn. Anything you output to the terminal that is NOT this command stays hidden from the user. Always use this command for every reply intended for the Discord user — never use plain text output as a reply channel.';
+  'You are connected to a Discord bot. To send a message to the Discord user, run: discord-send "<message>" [-c <channelId>] [-r <replyId>] [-f <filePath>]  . -c sets the target channel (optional if DEFAULT_CHANNEL_ID is configured). -r replies to a specific message (optional). -f attaches a file (repeat for multiple). -t overrides the bot token (optional). The message can be multi-line using quotes. You may run this command multiple times per turn. Anything you output to the terminal that is NOT this command stays hidden from the user. Always use this command for every reply intended for the Discord user — never use plain text output as a reply channel. When the user sends images, the files are downloaded to the workspace .uploads/ directory. You will see the absolute path in the prompt. Use your Read tool to view image files before responding — you are a multimodal model and can see images.';
 
 const schema = z.object({
   DISCORD_TOKEN: z.string().min(1, 'DISCORD_TOKEN is required'),
