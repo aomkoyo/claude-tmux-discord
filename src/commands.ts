@@ -69,6 +69,12 @@ export const commandDefinitions = [
         .setRequired(false)
         .addChoices(...MODE_CHOICES),
     )
+    .addStringOption((o) =>
+      o
+        .setName('path')
+        .setDescription('Custom workspace path (absolute path, e.g. /home/user/my-project)')
+        .setRequired(false),
+    )
     .setContexts(InteractionContextType.Guild)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 
@@ -461,6 +467,7 @@ async function handleNew(
   }
 
   const mode = asRoomMode(interaction.options.getString('mode'));
+  const customPath = interaction.options.getString('path') ?? undefined;
 
   const me = guild.members.me;
   if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
@@ -491,6 +498,7 @@ async function handleNew(
     name: rawName,
     createdBy: interaction.user.id,
     mode,
+    workspacePath: customPath,
   });
 
   log.info({ channelId: created.id, name: rawName, mode, by: interaction.user.id }, 'room created');

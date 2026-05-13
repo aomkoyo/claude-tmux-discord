@@ -48,6 +48,7 @@ export type RoomCreate = {
   name: string;
   createdBy: string;
   mode?: RoomMode;
+  workspacePath?: string | undefined;
 };
 
 export class SessionManager {
@@ -95,7 +96,9 @@ export class SessionManager {
 
   async registerRoom(input: RoomCreate): Promise<db.Room> {
     const tmuxSession = this.cfg.tmuxSessionPrefix + input.channelId;
-    const workspaceDir = path.join(this.cfg.workspaceRoot, input.channelId);
+    const workspaceDir = input.workspacePath
+      ? path.resolve(input.workspacePath)
+      : path.join(this.cfg.workspaceRoot, input.channelId);
     await mkdir(workspaceDir, { recursive: true });
     const room = await db.createRoom({
       channelId: input.channelId,
