@@ -63,6 +63,10 @@ export async function sendPromptText(name: string, text: string): Promise<void> 
   await tmux(['send-keys', '-t', name, '-l', text]);
 }
 
+export async function sendRawKeys(name: string, text: string): Promise<void> {
+  await tmux(['send-keys', '-t', name, text]);
+}
+
 export async function sendEnter(name: string): Promise<void> {
   await tmux(['send-keys', '-t', name, 'Enter']);
 }

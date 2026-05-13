@@ -33,5 +33,13 @@
     "prisma": "^6.19.2",
     "tsx": "^4.19.2",
     "typescript": "^6.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
   }
 }

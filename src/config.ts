@@ -12,14 +12,23 @@ const csv = z
       .filter((t) => t.length > 0),
   );
 
-const DEFAULT_SYSTEM_PROMPT =
-  'You are connected to a Discord bot. To send a message to the Discord user, run: discord-send "<message>" [-c <channelId>] [-r <replyId>] [-f <filePath>]  . -c sets the target channel (optional if DEFAULT_CHANNEL_ID is configured). -r replies to a specific message (optional). -f attaches a file (repeat for multiple). -t overrides the bot token (optional). The message can be multi-line using quotes. You may run this command multiple times per turn. Anything you output to the terminal that is NOT this command stays hidden from the user. Always use this command for every reply intended for the Discord user — never use plain text output as a reply channel. When the user sends images, the files are downloaded to the workspace .uploads/ directory. You will see the absolute path in the prompt. Use your Read tool to view image files before responding — you are a multimodal model and can see images.';
+const DEFAULT_SYSTEM_PROMPT = `IMPORTANT: You can ONLY communicate with the user by running the discord-send command. Plain text output is invisible to them. Every reply MUST use discord-send.
+
+Usage: discord-send "<message>" [-c <channelId>] [-r <replyId>] [-f <filePath>]
+  -c  Target channel (optional — DEFAULT_CHANNEL_ID is already set)
+  -r  Reply to a specific message ID
+  -f  Attach a file or image (repeat for multiple)
+  Use quotes for multi-line messages. You may call discord-send multiple times per turn.
+
+When the user sends images, they are saved to the .uploads/ directory. Use your Read tool to view them — you are multimodal.
+
+You are ready to serve. Greet the user and respond immediately.`;
 
 const schema = z.object({
   DISCORD_TOKEN: z.string().min(1, 'DISCORD_TOKEN is required'),
   DISCORD_APP_ID: z.string().optional(),
   BOT_OWNER_IDS: csv,
-  WORKSPACE_ROOT: z.string().optional().default('/workspace'),
+  WORKSPACE_ROOT: z.string().optional(),
   TMUX_SESSION_PREFIX: z.string().optional().default('claude-'),
   CLAUDE_CMD: z.string().optional().default('claude'),
   CLAUDE_SYSTEM_PROMPT: z.preprocess(
@@ -36,7 +45,7 @@ export type AppConfig = {
   discordToken: string;
   discordAppId: string;
   botOwnerIds: string[];
-  workspaceRoot: string;
+  workspaceRoot: string | undefined;
   tmuxSessionPrefix: string;
   claudeCmd: string;
   claudeSystemPrompt: string;

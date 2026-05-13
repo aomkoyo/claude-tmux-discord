@@ -7,8 +7,6 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type ButtonInteraction,
-  type CategoryChannel,
-  type Guild,
   type Client,
 } from 'discord.js';
 import * as db from './db.js';
@@ -52,72 +50,6 @@ function extractSnowflake(raw: string): string | null {
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
-    .setName('new')
-    .setDescription('Create a new Claude room (Discord channel + tmux session + workspace)')
-    .addStringOption((o) =>
-      o
-        .setName('name')
-        .setDescription('Room name (lowercase, digits, dash, underscore; 2-31 chars)')
-        .setRequired(true)
-        .setMinLength(2)
-        .setMaxLength(31),
-    )
-    .addStringOption((o) =>
-      o
-        .setName('mode')
-        .setDescription('Permission mode for Claude in this room')
-        .setRequired(false)
-        .addChoices(...MODE_CHOICES),
-    )
-    .addStringOption((o) =>
-      o
-        .setName('path')
-        .setDescription('Custom workspace path (absolute path, e.g. /home/user/my-project)')
-        .setRequired(false),
-    )
-    .addStringOption((o) =>
-      o
-        .setName('agent')
-        .setDescription('Agent to use (e.g. claude, codex, gemini — defined via AGENT_* env vars)')
-        .setRequired(false),
-    )
-    .setContexts(InteractionContextType.Guild)
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-
-  new SlashCommandBuilder()
-    .setName('mode')
-    .setDescription('Change the permission mode of this room (restarts Claude)')
-    .addStringOption((o) =>
-      o
-        .setName('mode')
-        .setDescription('New mode')
-        .setRequired(true)
-        .addChoices(...MODE_CHOICES),
-    )
-    .setContexts(InteractionContextType.Guild)
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-
-  new SlashCommandBuilder()
-    .setName('delete')
-    .setDescription('Delete this Claude room (channel + tmux session + DB row)')
-    .addBooleanOption((o) =>
-      o
-        .setName('force')
-        .setDescription('Required: confirm destructive action')
-        .setRequired(true),
-    )
-    .addBooleanOption((o) =>
-      o.setName('wipe').setDescription('Also delete the workspace directory').setRequired(false),
-    )
-    .setContexts(InteractionContextType.Guild)
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-
-  new SlashCommandBuilder()
-    .setName('rooms')
-    .setDescription('List all registered Claude rooms in this guild')
-    .setContexts(InteractionContextType.Guild),
-
-  new SlashCommandBuilder()
     .setName('rename')
     .setDescription('Rename this Claude room')
     .addStringOption((o) =>
@@ -134,11 +66,6 @@ export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName('status')
     .setDescription('Show this channel\'s tmux session info')
-    .setContexts(InteractionContextType.Guild),
-
-  new SlashCommandBuilder()
-    .setName('reset')
-    .setDescription('Kill the tmux session for this channel (next message starts fresh Claude)')
     .setContexts(InteractionContextType.Guild),
 
   new SlashCommandBuilder()
@@ -307,26 +234,11 @@ export function bindCommandHandlers(client: Client, deps: CommandDeps): void {
     if (interaction.isChatInputCommand()) {
       try {
         switch (interaction.commandName) {
-          case 'new':
-            await handleNew(interaction, sessionMgr, cfg, log);
-            break;
-          case 'delete':
-            await handleDelete(interaction, sessionMgr, log);
-            break;
-          case 'rooms':
-            await handleRooms(interaction, sessionMgr);
-            break;
           case 'rename':
             await handleRename(interaction, sessionMgr);
             break;
-          case 'mode':
-            await handleMode(interaction, sessionMgr, log);
-            break;
           case 'status':
             await handleStatus(interaction, sessionMgr, cfg);
-            break;
-          case 'reset':
-            await handleReset(interaction, sessionMgr);
             break;
           case 'acl':
             await handleAcl(interaction, acl, sessionMgr, client, cfg.botOwnerIds, log);
@@ -519,194 +431,6 @@ function formatList(title: string, items: string[]): string {
 
 // ─── handlers ────────────────────────────────────────────────────────
 
-async function handleNew(
-  interaction: ChatInputCommandInteraction,
-  sessionMgr: SessionManager,
-  cfg: AppConfig,
-  log: Logger,
-): Promise<void> {
-  if (!interaction.guild) {
-    await replyEphemeral(interaction, '❌ `/new` only works in a guild.');
-    return;
-  }
-  const guild: Guild = interaction.guild;
-
-  const rawName = interaction.options.getString('name', true);
-  if (!NAME_RE.test(rawName)) {
-    await replyEphemeral(
-      interaction,
-      '❌ Name must match `[a-z0-9][a-z0-9-_]{1,30}` (lowercase, digits, dash, underscore).',
-    );
-    return;
-  }
-
-  const mode = asRoomMode(interaction.options.getString('mode'));
-  const customPath = interaction.options.getString('path') ?? undefined;
-  const agentRaw = interaction.options.getString('agent')?.toLowerCase();
-  const agent = agentRaw ?? cfg.defaultAgent;
-  if (!cfg.agents.has(agent)) {
-    const available = [...cfg.agents.keys()].join(', ');
-    await replyEphemeral(interaction, `❌ Unknown agent \`${agent}\`. Available: ${available}`);
-    return;
-  }
-
-  const me = guild.members.me;
-  if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    await replyEphemeral(interaction, '❌ Bot missing `Manage Channels` permission.');
-    return;
-  }
-
-  await interaction.deferReply();
-
-  let parent: CategoryChannel | null = null;
-  const source = interaction.channel;
-  if (source && 'parent' in source && source.parent && source.parent.type === ChannelType.GuildCategory) {
-    parent = source.parent;
-  }
-
-  let projectId: string | undefined;
-  let effectiveMode = mode;
-  if (parent && !customPath) {
-    const project = await sessionMgr.findProjectByCategory(parent.id);
-    if (project) {
-      projectId = project.categoryId;
-      if (mode === 'bypassPermissions' && project.defaultMode !== 'bypassPermissions') {
-        effectiveMode = asRoomMode(project.defaultMode);
-      }
-    }
-  }
-
-  const created = await guild.channels.create({
-    name: `claude-${rawName}`,
-    type: ChannelType.GuildText,
-    parent: parent?.id ?? null,
-    topic: `Claude Code session — created by <@${interaction.user.id}>`,
-    reason: `claude-tmux-discord: /new by ${interaction.user.tag}`,
-  });
-
-  const room = await sessionMgr.registerRoom({
-    channelId: created.id,
-    guildId: guild.id,
-    parentId: parent?.id ?? null,
-    name: rawName,
-    createdBy: interaction.user.id,
-    mode: effectiveMode,
-    workspacePath: customPath,
-    projectId,
-    agent,
-  });
-
-  const agentDef = cfg.agents.get(agent);
-  log.info({ channelId: created.id, name: rawName, mode: effectiveMode, agent, by: interaction.user.id }, 'room created');
-  await interaction.editReply(
-    `✅ Created <#${created.id}> · agent \`${agent}\` (\`${agentDef?.cmd ?? agent}\`) · mode \`${effectiveMode}\` · workspace \`${room.workspaceDir}\``,
-  );
-}
-
-async function handleMode(
-  interaction: ChatInputCommandInteraction,
-  sessionMgr: SessionManager,
-  log: Logger,
-): Promise<void> {
-  const room = await sessionMgr.getRoom(interaction.channelId);
-  if (!room) {
-    await replyEphemeral(
-      interaction,
-      '❌ This channel is not a registered Claude room. Use `/new` to create one.',
-    );
-    return;
-  }
-
-  const newMode = asRoomMode(interaction.options.getString('mode', true));
-  if (newMode === room.mode) {
-    await replyEphemeral(interaction, `ℹ️ Already in \`${newMode}\` mode.`);
-    return;
-  }
-
-  await interaction.deferReply();
-  const updated = await sessionMgr.setRoomMode(interaction.channelId, newMode);
-  if (!updated) {
-    await interaction.editReply(`⚠️ Failed to update mode.`);
-    return;
-  }
-  log.info({ channelId: interaction.channelId, from: room.mode, to: newMode }, 'mode changed');
-
-  let warn = '';
-  if (newMode === 'bypassPermissions') {
-    warn = '\n\n⚠️ **bypass mode** — Claude will run shell commands and edit files without asking. Use only if you trust the prompt source.';
-  }
-  await interaction.editReply(
-    `🔧 Mode changed: \`${room.mode}\` → \`${newMode}\`. tmux session killed; next message will start a fresh Claude with the new flags.${warn}`,
-  );
-}
-
-async function handleDelete(
-  interaction: ChatInputCommandInteraction,
-  sessionMgr: SessionManager,
-  log: Logger,
-): Promise<void> {
-  if (!interaction.guild) {
-    await replyEphemeral(interaction, '❌ `/delete` only works in a guild.');
-    return;
-  }
-
-  const force = interaction.options.getBoolean('force', true);
-  const wipe = interaction.options.getBoolean('wipe') ?? false;
-
-  if (!force) {
-    await replyEphemeral(interaction, '⚠️ You must pass `force: True` to confirm deletion.');
-    return;
-  }
-
-  const room = await sessionMgr.getRoom(interaction.channelId);
-  if (!room) {
-    await replyEphemeral(
-      interaction,
-      '❌ This channel is not a registered Claude room. Use `/new` to create one.',
-    );
-    return;
-  }
-
-  const me = interaction.guild.members.me;
-  if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    await replyEphemeral(interaction, '❌ Bot missing `Manage Channels` permission.');
-    return;
-  }
-
-  // Acknowledge before destructive ops; the channel itself goes away last.
-  await interaction.reply({
-    content: `🗑️ Deleting room \`${room.name}\`${wipe ? ' (wiping workspace)' : ''}…`,
-  });
-
-  await sessionMgr.unregisterRoom(interaction.channelId, { wipeWorkspace: wipe });
-  log.info(
-    { channelId: interaction.channelId, by: interaction.user.id, wipe },
-    'room deleted',
-  );
-
-  if (interaction.channel && 'delete' in interaction.channel && typeof interaction.channel.delete === 'function') {
-    await (interaction.channel as { delete(reason?: string): Promise<unknown> }).delete(
-      `claude-tmux-discord: /delete by ${interaction.user.tag}`,
-    );
-  }
-}
-
-async function handleRooms(
-  interaction: ChatInputCommandInteraction,
-  sessionMgr: SessionManager,
-): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
-  const rooms = await sessionMgr.listRooms(interaction.guild?.id);
-  if (rooms.length === 0) {
-    await interaction.editReply('🪹 No rooms registered. Use `/new` to create one.');
-    return;
-  }
-  const lines = rooms.map(
-    (r) => `• <#${r.channelId}> — \`${r.name}\` · tmux \`${r.tmuxSession}\` · by <@${r.createdBy}>`,
-  );
-  await interaction.editReply(['**Registered rooms**', ...lines].join('\n'));
-}
-
 async function handleRename(
   interaction: ChatInputCommandInteraction,
   sessionMgr: SessionManager,
@@ -756,15 +480,6 @@ async function handleStatus(
   await interaction.reply({ content: lines.join('\n'), ephemeral: true });
 }
 
-async function handleReset(
-  interaction: ChatInputCommandInteraction,
-  sessionMgr: SessionManager,
-): Promise<void> {
-  await interaction.deferReply();
-  await sessionMgr.resetChannel(interaction.channelId);
-  await interaction.editReply('🔁 Session reset. The next message will start a fresh Claude.');
-}
-
 async function handleEnter(
   interaction: ChatInputCommandInteraction,
   sessionMgr: SessionManager,
@@ -790,6 +505,21 @@ async function handleEnter(
     ephemeral: true,
   });
 
+  // Start typing indicator — keeps firing every 8s for up to 60s
+  const channel = interaction.channel;
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
+  if (channel && 'sendTyping' in channel && typeof channel.sendTyping === 'function') {
+    const sendTyping = () => {
+      (channel as { sendTyping(): Promise<void> }).sendTyping().catch(() => {});
+    };
+    sendTyping();
+    typingInterval = setInterval(sendTyping, 8_000);
+    setTimeout(() => {
+      if (typingInterval) clearInterval(typingInterval);
+      typingInterval = undefined;
+    }, 60_000);
+  }
+
   try {
     await sessionMgr.sendPrompt(interaction.channelId, flushed.text);
   } catch (err) {
@@ -802,6 +532,8 @@ async function handleEnter(
     } catch {
       // best-effort
     }
+  } finally {
+    if (typingInterval) clearInterval(typingInterval);
   }
 }
 
@@ -850,11 +582,7 @@ async function handleHelp(interaction: ChatInputCommandInteraction, cfg: AppConf
     ephemeral: true,
     content: [
       '**Room management**',
-      '`/new name:<name> [mode:<mode>] [agent:<name>]` — สร้าง Discord channel ใหม่ + workspace + tmux session',
-      '`/delete force:True [wipe:True]` — ลบห้องนี้ (channel + tmux + DB; `wipe` ลบ workspace ด้วย)',
-      '`/rooms` — list ห้องที่ลงทะเบียนทั้งหมด',
       '`/rename name:<new>` — เปลี่ยนชื่อห้องนี้',
-      '`/mode mode:<mode>` — เปลี่ยน permission mode ของห้องนี้ (restart Claude อัตโนมัติ)',
       '',
       '**Send flow (buffered!)**',
       'พิมพ์ข้อความหรือแนบรูปในห้อง = เก็บใน buffer ไม่ได้ส่งให้ Claude ทันที',
@@ -864,7 +592,6 @@ async function handleHelp(interaction: ChatInputCommandInteraction, cfg: AppConf
       '',
       '**Session control**',
       '`/status` — ข้อมูล session ของห้องนี้',
-      '`/reset` — kill tmux ของห้องนี้',
       '`/agent name:<name>` — เปลี่ยน agent (reset session อัตโนมัติ)',
       '`/help` — แสดงข้อความนี้',
       '',

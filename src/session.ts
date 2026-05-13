@@ -1,12 +1,10 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import * as tmux from './tmux.js';
 import * as db from './db.js';
 import { asRoomMode, type RoomMode } from './db.js';
-import { isClaudeAgent } from './agents.js';
 import type { AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 
@@ -17,34 +15,8 @@ const MODE_FLAGS: Record<RoomMode, string[]> = {
   bypassPermissions: ['--dangerously-skip-permissions'],
 };
 
-function channelSessionId(channelId: string): string {
-  const hash = createHash('sha256').update(`claude-tmux-discord:${channelId}`).digest('hex');
-  return [
-    hash.slice(0, 8),
-    hash.slice(8, 12),
-    '4' + hash.slice(13, 16),
-    ((parseInt(hash.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0') + hash.slice(18, 20),
-    hash.slice(20, 32),
-  ].join('-');
-}
-
 function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-function claudeHistoryDir(workspaceDir: string): string {
-  const abs = path.resolve(workspaceDir);
-  const encoded = abs.replace(/\//g, '-');
-  return path.join(homedir(), '.claude', 'projects', encoded);
-}
-
-async function hasClaudeHistory(workspaceDir: string): Promise<boolean> {
-  try {
-    const entries = await readdir(claudeHistoryDir(workspaceDir));
-    return entries.some((e) => e.endsWith('.jsonl'));
-  } catch {
-    return false;
-  }
 }
 
 type SessionState = {
@@ -120,6 +92,9 @@ export class SessionManager {
       if (!project) throw new Error(`Project not found: ${input.projectId}`);
       workspaceDir = project.workspaceDir;
     } else {
+      if (!this.cfg.workspaceRoot) {
+        throw new Error('Workspace path is required — set WORKSPACE_ROOT or provide a workspace path via /new');
+      }
       workspaceDir = path.join(this.cfg.workspaceRoot, input.channelId);
     }
 
@@ -195,9 +170,15 @@ export class SessionManager {
     defaultMode?: RoomMode;
     createdBy: string;
   }): Promise<db.Project> {
-    const workspaceDir = input.workspacePath
-      ? path.resolve(input.workspacePath)
-      : path.join(this.cfg.workspaceRoot, input.name);
+    let workspaceDir: string;
+    if (input.workspacePath) {
+      workspaceDir = path.resolve(input.workspacePath);
+    } else {
+      if (!this.cfg.workspaceRoot) {
+        throw new Error('Workspace path is required — set WORKSPACE_ROOT or provide a workspace path');
+      }
+      workspaceDir = path.join(this.cfg.workspaceRoot, input.name);
+    }
     await mkdir(workspaceDir, { recursive: true });
     return db.createProject({
       categoryId: input.categoryId,
@@ -257,7 +238,14 @@ export class SessionManager {
   async statusChannel(channelId: string): Promise<{ exists: boolean; sessionName: string; cwd: string; room: db.Room | null }> {
     const room = await db.findRoomByChannel(channelId);
     const name = room?.tmuxSession ?? this.cfg.tmuxSessionPrefix + channelId;
-    const cwd = room?.workspaceDir ?? path.join(this.cfg.workspaceRoot, channelId);
+    let cwd: string;
+    if (room?.workspaceDir) {
+      cwd = room.workspaceDir;
+    } else if (this.cfg.workspaceRoot) {
+      cwd = path.join(this.cfg.workspaceRoot, channelId);
+    } else {
+      throw new Error('Workspace path is required — set WORKSPACE_ROOT or register the room first');
+    }
     const exists = await tmux.sessionExists(name);
     return { exists, sessionName: name, cwd, room };
   }
@@ -267,18 +255,30 @@ export class SessionManager {
   private async ensure(channelId: string, initialMessage?: string): Promise<SessionState> {
     const cached = this.sessions.get(channelId);
     if (cached) {
-      if (initialMessage && initialMessage.trim().length > 0) {
-        const queued = cached.busy.then(() => this.runOne(cached, initialMessage));
-        cached.busy = queued.catch((err) => {
-          this.log.error({ err, channelId }, 'prompt run failed');
-        });
+      const stillAlive = await tmux.sessionExists(cached.tmuxSession);
+      if (stillAlive) {
+        if (initialMessage && initialMessage.trim().length > 0) {
+          const queued = cached.busy.then(() => this.runOne(cached, initialMessage));
+          cached.busy = queued.catch((err) => {
+            this.log.error({ err, channelId }, 'prompt run failed');
+          });
+        }
+        return cached;
       }
-      return cached;
+      this.log.warn({ channelId, tmuxSession: cached.tmuxSession }, 'cached session gone, recreating');
+      this.sessions.delete(channelId);
     }
 
     const room = await db.findRoomByChannel(channelId);
     const name = room?.tmuxSession ?? this.cfg.tmuxSessionPrefix + channelId;
-    const cwd = room?.workspaceDir ?? path.join(this.cfg.workspaceRoot, channelId);
+    let cwd: string;
+    if (room?.workspaceDir) {
+      cwd = room.workspaceDir;
+    } else if (this.cfg.workspaceRoot) {
+      cwd = path.join(this.cfg.workspaceRoot, channelId);
+    } else {
+      throw new Error('Workspace path is required — set WORKSPACE_ROOT or register the room first');
+    }
 
     await mkdir(cwd, { recursive: true });
 
@@ -287,39 +287,22 @@ export class SessionManager {
     const agentDef = this.cfg.agents.get(agentName);
     const agentCmd = agentDef?.cmd ?? this.cfg.claudeCmd;
     const agentPrompt = agentDef?.systemPrompt ?? this.cfg.claudeSystemPrompt;
-    const isClaude = isClaudeAgent(agentCmd);
-
     const alreadyExists = await tmux.sessionExists(name);
     if (!alreadyExists) {
-      const [markerSeen, historySeen] = await Promise.all([
-        this.markerExists(cwd, channelId),
-        isClaude ? hasClaudeHistory(cwd) : Promise.resolve(false),
-      ]);
-      const startedBefore = markerSeen || historySeen;
-
       const startFlags: string[] = [];
-      if (isClaude) {
-        startFlags.push(...MODE_FLAGS[mode]);
-      }
+      startFlags.push(...MODE_FLAGS[mode]);
       if (agentPrompt.length > 0 && agentDef?.systemPromptFlag) {
         startFlags.push(agentDef.systemPromptFlag, shellSingleQuote(agentPrompt));
       }
-      if (agentDef?.sessionIdFlag) {
-        startFlags.push(agentDef.sessionIdFlag, channelSessionId(channelId));
-      }
-      if (startedBefore && agentDef?.resumeFlag) {
-        startFlags.push(agentDef.resumeFlag);
-      }
 
       this.log.info(
-        { channelId, name, cwd, mode, agent: agentName, resume: startedBefore },
+        { channelId, name, cwd, mode, agent: agentName },
         'creating tmux session and starting agent',
       );
       await tmux.createSession(name, cwd);
       await this.exportEnvToSession(name, channelId);
       await tmux.startAgent(name, agentCmd, startFlags);
       await this.waitForAgentReady(name, channelId);
-      await this.writeMarker(cwd, channelId);
     } else {
       this.log.info({ channelId, name, mode, agent: agentName }, 'reattaching to existing tmux session');
       await this.waitForAgentReady(name, channelId);
@@ -343,24 +326,16 @@ export class SessionManager {
     return state;
   }
 
-  private markerPath(cwd: string, channelId: string): string {
-    return path.join(cwd, '.claude-tmux-discord', channelId, 'started');
-  }
-
-  private async markerExists(cwd: string, channelId: string): Promise<boolean> {
-    try {
-      await stat(this.markerPath(cwd, channelId));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async exportEnvToSession(sessionName: string, channelId: string): Promise<void> {
+    const botBinDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '.bin');
     await tmux.setEnvironment(sessionName, 'DISCORD_TOKEN', this.cfg.discordToken);
     await tmux.setEnvironment(sessionName, 'DEFAULT_CHANNEL_ID', channelId);
     const exports = `export DISCORD_TOKEN=${shellSingleQuote(this.cfg.discordToken)} DEFAULT_CHANNEL_ID=${shellSingleQuote(channelId)}`;
     await tmux.sendPromptText(sessionName, exports);
+    await tmux.sendEnter(sessionName);
+    await delay(300);
+    const pathExport = `export PATH=${shellSingleQuote(botBinDir + ':')}$PATH`;
+    await tmux.sendPromptText(sessionName, pathExport);
     await tmux.sendEnter(sessionName);
     await delay(500);
   }
@@ -368,6 +343,7 @@ export class SessionManager {
   private async waitForAgentReady(sessionName: string, channelId: string): Promise<void> {
     const maxWaitMs = 60_000;
     const pollMs = 1000;
+    const readyPattern = /❯\s*$/;
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
       await delay(pollMs);
@@ -378,23 +354,14 @@ export class SessionManager {
         continue;
       }
       const trimmed = pane.trimEnd();
-      const lastLine = trimmed.split('\n').at(-1) ?? '';
-      if (/[❯>$#%]\s*$/.test(lastLine)) {
+      const lines = trimmed.split('\n');
+      const tail = lines.slice(-5);
+      if (tail.some((line) => readyPattern.test(line.trimEnd()))) {
         this.log.info({ channelId, elapsed: Date.now() - start }, 'agent ready');
         return;
       }
     }
     this.log.warn({ channelId, maxWaitMs }, 'agent did not become ready in time, proceeding anyway');
-  }
-
-  private async writeMarker(cwd: string, channelId: string): Promise<void> {
-    const file = this.markerPath(cwd, channelId);
-    try {
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(file, new Date().toISOString());
-    } catch (err) {
-      this.log.warn({ err, file }, 'failed to write claude resume marker');
-    }
   }
 
   private async runOne(state: SessionState, text: string): Promise<void> {
