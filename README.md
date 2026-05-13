@@ -1,28 +1,37 @@
 # claude-tmux-discord
 
-Discord bot that remote-controls **Claude Code** running inside **tmux sessions**.
-Each Discord channel gets its own isolated tmux + workspace. Claude replies to Discord
+Discord bot that remote-controls **AI coding agents** (Claude Code, Codex, Gemini, Copilot, etc.) running inside **tmux sessions**.
+Each Discord channel gets its own isolated tmux + workspace. Agents reply to Discord
 via [`@aomkoyo/discord-cli`](https://www.npmjs.com/package/@aomkoyo/discord-cli) (`discord-send`).
 
 ## How it works
 
 ```
-Discord channel  -->  /enter  -->  tmux session (Claude Code)
+Discord channel  -->  /enter  -->  tmux session (AI agent)
                                         |
                                    discord-send  -->  Discord channel
 ```
 
 1. User types messages in a Discord channel (buffered)
-2. User runs `/enter` to flush the buffer as a single Claude prompt
-3. Claude processes the prompt inside a tmux session
-4. Claude sends replies back to Discord using `discord-send` CLI
+2. User runs `/enter` to flush the buffer as a single prompt
+3. The AI agent processes the prompt inside a tmux session
+4. The agent sends replies back to Discord using `discord-send` CLI
+
+## Key features
+
+- **Multi-agent** — Run Claude, Codex, Gemini, Copilot, or any CLI agent per room
+- **Projects** — Group channels under a Discord category with a shared workspace
+- **Per-channel isolation** — Each channel gets its own tmux session
+- **Buffer-then-enter** — Compose multi-message prompts with attachments
+- **Auto-registration** — Channels created in project categories auto-register
+- **Image support** — Upload images that agents can view and reference
 
 ## Requirements
 
 - **Node.js** >= 22
 - **pnpm** (via corepack)
 - **tmux**
-- **Claude Code** CLI (`claude`) — installed and authenticated
+- At least one AI coding CLI installed and authenticated (e.g. `claude`, `codex`, `gemini`)
 - A **Discord bot token** with `MESSAGE_CONTENT` intent enabled
 
 ---
@@ -164,19 +173,31 @@ Source files are mounted, auto-reloads on change via `tsx watch`.
 
 | Command | Description |
 |---------|-------------|
-| `/new <name> [mode]` | Create a new Claude room (channel + tmux + workspace) |
+| `/new <name> [mode] [agent] [path]` | Create a new room (channel + tmux + workspace) |
 | `/delete --force` | Delete this room and its tmux session |
 | `/rooms` | List all registered rooms in this guild |
 | `/rename <name>` | Rename this room |
-| `/mode <mode>` | Change permission mode (restarts Claude) |
-| `/status` | Show tmux session info for this channel |
+| `/mode <mode>` | Change permission mode (restarts agent) |
+| `/agent <name>` | Switch agent for this room (resets session) |
+| `/status` | Show tmux session info, agent, and workspace |
+
+### Projects (shared workspace)
+
+| Command | Description |
+|---------|-------------|
+| `/project create <name> [dir] [mode]` | Create a project category with shared workspace |
+| `/project list` | List all projects in this guild |
+| `/project delete --force` | Delete this project |
+| `/project info` | Show project info for this channel's category |
+
+Channels created inside a project category are **auto-registered** as rooms with the project's shared workspace.
 
 ### Messaging
 
 | Command | Description |
 |---------|-------------|
 | _(type messages)_ | Messages are buffered automatically |
-| `/enter` | Flush buffer and send to Claude as a single prompt |
+| `/enter` | Flush buffer and send to the agent as a single prompt |
 | `/cancel` | Discard buffered messages |
 | `/buffer` | Show what is currently buffered |
 | `/reset` | Kill tmux session (next `/enter` starts fresh) |
@@ -194,7 +215,7 @@ Source files are mounted, auto-reloads on change via `tsx watch`.
 
 | Mode | Description |
 |------|-------------|
-| `default` | Normal Claude permissions |
+| `default` | Normal permissions (asks before edits/commands) |
 | `plan` | Plan mode only |
 | `acceptEdits` | Auto-accept file edits |
 | `bypassPermissions` | Skip all permission prompts (default for new rooms) |
@@ -256,8 +277,10 @@ discord-send "Simple"
 | `DATABASE_URL` | No | `file:./dev.db` | `file:/data/state.db` | SQLite connection |
 | `WORKSPACE_ROOT` | No | `./workspace` | `/workspace` | Channel workspace root |
 | `TMUX_SESSION_PREFIX` | No | `claude-` | `claude-` | Tmux session name prefix |
-| `CLAUDE_CMD` | No | `claude` | `claude` | Claude CLI command |
-| `CLAUDE_SYSTEM_PROMPT` | No | built-in | built-in | Override system prompt (`OFF` to disable) |
+| `CLAUDE_CMD` | No | `claude` | `claude` | Default Claude CLI command (fallback) |
+| `CLAUDE_SYSTEM_PROMPT` | No | built-in | built-in | Default system prompt (`OFF` to disable) |
+| `AGENT_<NAME>` | No | | | Define agent: `AGENT_CODEX=codex --full-auto` |
+| `AGENT_<NAME>_PROMPT` | No | | | Per-agent system prompt override |
 | `DEFAULT_CHANNEL_ID` | No | | | Default channel for `discord-send` |
 | `LOG_LEVEL` | No | `info` | `info` | Pino log level |
 
@@ -267,8 +290,9 @@ discord-send "Simple"
 claude-tmux-discord/
   src/
     index.ts          # Entry point
-    bot.ts            # Discord client setup
+    bot.ts            # Discord client setup + auto-registration
     config.ts         # Env validation (zod)
+    agents.ts         # Agent registry (AGENT_* env parsing)
     session.ts        # Tmux session management
     commands.ts       # Slash command handlers
     tmux.ts           # Tmux shell wrapper
