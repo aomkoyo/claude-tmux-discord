@@ -81,6 +81,13 @@ export const commandDefinitions = [
         .setDescription('Agent to use (e.g. claude, codex, gemini — defined via AGENT_* env vars)')
         .setRequired(false),
     )
+    .addChannelOption((o) =>
+      o
+        .setName('category')
+        .setDescription('Target category to create the channel in')
+        .setRequired(false)
+        .addChannelTypes(ChannelType.GuildCategory),
+    )
     .setContexts(InteractionContextType.Guild)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 
@@ -558,10 +565,15 @@ async function handleNew(
 
   await interaction.deferReply();
 
+  const categoryOption = interaction.options.getChannel('category');
   let parent: CategoryChannel | null = null;
-  const source = interaction.channel;
-  if (source && 'parent' in source && source.parent && source.parent.type === ChannelType.GuildCategory) {
-    parent = source.parent;
+  if (categoryOption && categoryOption.type === ChannelType.GuildCategory) {
+    parent = categoryOption as CategoryChannel;
+  } else {
+    const source = interaction.channel;
+    if (source && 'parent' in source && source.parent && source.parent.type === ChannelType.GuildCategory) {
+      parent = source.parent;
+    }
   }
 
   let projectId: string | undefined;
