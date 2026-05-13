@@ -1,8 +1,13 @@
 # @aomkoyo/discord-cli
 
+[![npm](https://img.shields.io/npm/v/@aomkoyo/discord-cli)](https://www.npmjs.com/package/@aomkoyo/discord-cli)
+[![GitHub](https://img.shields.io/github/license/aomkoyo/claude-tmux-discord)](https://github.com/aomkoyo/claude-tmux-discord/blob/main/LICENSE)
+
 Zero-dependency CLI for sending messages and files to Discord channels. Uses Node.js built-in `fetch` against the Discord REST API v10 directly.
 
-Built for [claude-tmux-discord](https://github.com/aomkoyo/claude-tmux-discord) — AI coding agents running in tmux use this to send replies back to Discord.
+Part of [**claude-tmux-discord**](https://github.com/aomkoyo/claude-tmux-discord) — AI coding agents running in tmux use this to send replies back to Discord.
+
+**[GitHub](https://github.com/aomkoyo/claude-tmux-discord/tree/main/cli)** | **[Issues](https://github.com/aomkoyo/claude-tmux-discord/issues)** | **[Wiki](https://github.com/aomkoyo/claude-tmux-discord/wiki/Discord-Send-CLI)**
 
 ## Install
 
@@ -107,6 +112,10 @@ discord-send "Working on it..." -r 1234567890123456789
 
 - **Node.js** >= 22
 
+## Contributing
+
+Contributions are welcome! Please open an issue or PR on [GitHub](https://github.com/aomkoyo/claude-tmux-discord).
+
 ## License
 
-MIT
+MIT - see [LICENSE](https://github.com/aomkoyo/claude-tmux-discord/blob/main/LICENSE)
