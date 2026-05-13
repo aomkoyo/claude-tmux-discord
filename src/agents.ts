@@ -2,10 +2,17 @@ export type AgentDef = {
   name: string;
   cmd: string;
   systemPrompt: string;
+  resumeFlag: string;
+  sessionIdFlag: string;
+  systemPromptFlag: string;
 };
 
 const AGENT_PREFIX = 'AGENT_';
-const PROMPT_SUFFIX = '_PROMPT';
+const META_SUFFIXES = ['_PROMPT', '_RESUME', '_SESSION_ID', '_SYSPROMPT_FLAG'] as const;
+
+function isMetaKey(key: string): boolean {
+  return META_SUFFIXES.some((s) => key.endsWith(s));
+}
 
 export function parseAgents(
   env: Record<string, string | undefined>,
@@ -15,19 +22,28 @@ export function parseAgents(
   const agents = new Map<string, AgentDef>();
 
   const agentKeys = Object.keys(env).filter(
-    (k) => k.startsWith(AGENT_PREFIX) && !k.endsWith(PROMPT_SUFFIX) && env[k]?.trim(),
+    (k) => k.startsWith(AGENT_PREFIX) && !isMetaKey(k) && env[k]?.trim(),
   );
 
   for (const key of agentKeys) {
     const val = env[key]!;
     const name = key.slice(AGENT_PREFIX.length).toLowerCase();
-    const promptKey = `${key}${PROMPT_SUFFIX}`;
-    const prompt = env[promptKey]?.trim() ?? defaultSystemPrompt;
-    agents.set(name, { name, cmd: val.trim(), systemPrompt: prompt });
+    const prompt = env[`${key}_PROMPT`]?.trim() ?? defaultSystemPrompt;
+    const resumeFlag = env[`${key}_RESUME`]?.trim() ?? '--continue';
+    const sessionIdFlag = env[`${key}_SESSION_ID`]?.trim() ?? '--session-id';
+    const systemPromptFlag = env[`${key}_SYSPROMPT_FLAG`]?.trim() ?? '--append-system-prompt';
+    agents.set(name, { name, cmd: val.trim(), systemPrompt: prompt, resumeFlag, sessionIdFlag, systemPromptFlag });
   }
 
   if (agents.size === 0) {
-    agents.set('claude', { name: 'claude', cmd: fallbackCmd, systemPrompt: defaultSystemPrompt });
+    agents.set('claude', {
+      name: 'claude',
+      cmd: fallbackCmd,
+      systemPrompt: defaultSystemPrompt,
+      resumeFlag: '--continue',
+      sessionIdFlag: '--session-id',
+      systemPromptFlag: '--append-system-prompt',
+    });
   }
 
   return agents;

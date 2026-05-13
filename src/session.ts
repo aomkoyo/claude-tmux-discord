@@ -300,12 +300,15 @@ export class SessionManager {
       const startFlags: string[] = [];
       if (isClaude) {
         startFlags.push(...MODE_FLAGS[mode]);
-        if (agentPrompt.length > 0) {
-          startFlags.push('--append-system-prompt', shellSingleQuote(agentPrompt));
-        }
-        const sessionId = channelSessionId(channelId);
-        startFlags.push('--session-id', sessionId);
-        if (startedBefore) startFlags.push('--continue');
+      }
+      if (agentPrompt.length > 0 && agentDef?.systemPromptFlag) {
+        startFlags.push(agentDef.systemPromptFlag, shellSingleQuote(agentPrompt));
+      }
+      if (agentDef?.sessionIdFlag) {
+        startFlags.push(agentDef.sessionIdFlag, channelSessionId(channelId));
+      }
+      if (startedBefore && agentDef?.resumeFlag) {
+        startFlags.push(agentDef.resumeFlag);
       }
 
       this.log.info(
@@ -317,13 +320,6 @@ export class SessionManager {
       await tmux.startAgent(name, agentCmd, startFlags);
       await this.waitForAgentReady(name, channelId);
       await this.writeMarker(cwd, channelId);
-
-      if (!isClaude && agentPrompt.length > 0) {
-        await delay(1000);
-        await tmux.sendPromptText(name, agentPrompt);
-        await tmux.sendEnter(name);
-        await this.waitForAgentReady(name, channelId);
-      }
     } else {
       this.log.info({ channelId, name, mode, agent: agentName }, 'reattaching to existing tmux session');
       await this.waitForAgentReady(name, channelId);
